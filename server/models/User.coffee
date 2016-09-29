@@ -11,6 +11,7 @@ languages = require '../routes/languages'
 _ = require 'lodash'
 errors = require '../commons/errors'
 Promise = require 'bluebird'
+co = require 'co'
 core_utils = require '../../app/core/utils'
 
 config = require '../../server_config'
@@ -222,6 +223,31 @@ UserSchema.statics.updateServiceSettings = (doc, callback) ->
 
   mc?.lists.subscribe params, onSuccess, onFailure
 
+UserSchema.methods.updateMailChimp = co.wrap ->
+  newGroups = []
+  for [mailchimpEmailGroup, emailGroup] in _.zip(mail.MAILCHIMP_GROUPS, mail.NEWS_GROUPS)
+    newGroups.push(mailchimpEmailGroup) if doc.isEmailSubscriptionEnabled(emailGroup)
+
+  oldMailChimpSettings = @get('mailChimp')
+
+  # don't add totally unsubscribed people to the list
+  return if (not oldMailChimpSettings) and newGroups.length is 0
+
+  # don't add unsubscribed users unless their email is verified
+  return unless (@get('emailVerified') or oldMailChimpSettings)
+
+  # Generate subscriber hash
+  # See: http://developer.mailchimp.com/documentation/mailchimp/guides/manage-subscribers-with-the-mailchimp-api/
+  # TODO: Migrate to hashed first
+  oldMailChimpEmail = oldMailChimpSettings?.email or oldMailChimpSettings?.email_address or ''
+  subscriberHash = if oldMailChimpEmail then crypto.createHash('md5').update(oldMailChimpEmail).digest('hex') else ''
+
+  # TODO: Implement/test this pseudocode
+  
+  # if user's email does not match their mailChimp email, unsubscribe the old email
+  # if the user's email is not validated and they are not already subscribed on MailChimp, return
+  # PUT the user to MailChimp, updating state and interests (groups)
+    
 UserSchema.statics.statsMapping =
   edits:
     article: 'stats.articleEdits'

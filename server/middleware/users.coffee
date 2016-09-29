@@ -79,6 +79,28 @@ module.exports =
       throw new errors.UnprocessableEntity('Verification code does not match')
     yield User.update({ _id: user.id }, { emailVerified: true })
     res.status(200).send({ role: user.get('role') })
+    
+  fetchMailChimpInfo: wrap (req, res) ->
+    mail = require '../commons/mail'
+    crypto = require 'crypto'
+    config = require '../../server_config'
+    oldAPI = mc
+    MailChimp = require('mailchimp-api-v3')
+    newAPI = new MailChimp(config.mail.mailchimpAPIKey)
+
+    subscriberHash = crypto.createHash('md5').update(req.user.get('email')).digest('hex')
+    console.log '!', subscriberHash
+    newAPIResponse = yield newAPI.get("/lists/#{mail.MAILCHIMP_LIST_ID}/members/#{subscriberHash}")
+    oldAPIResponse = yield new Promise((resolve, reject) ->
+      oldAPI.lists.memberInfo(
+        { id: mail.MAILCHIMP_LIST_ID, emails: [{email: req.user.get('email')}] },
+        resolve,
+        reject
+      )
+    )
+    interestCategories = yield newAPI.get("/lists/#{mail.MAILCHIMP_LIST_ID}/interest-categories/810c02bada/interests")
+    console.log(JSON.stringify({newAPIResponse, oldAPIResponse, interestCategories}, null, '\t'))
+    res.send({newAPIResponse, oldAPIResponse})
 
   resetEmailVerifiedFlag: wrap (req, res, next) ->
     newEmail = req.body.email

@@ -28,7 +28,7 @@ courseIDs =
   WEB_DEVELOPMENT_2: '5789587aad86a6efb5737020'
   COMPUTER_SCIENCE_4: '56462f935afde0c6fd30fc8d'
   COMPUTER_SCIENCE_5: '569ed916efa72b0ced971447'
-  COMPUTER_SCIENCE_6: '56a683b9506a6936008ba424'
+  COMPUTER_SCIENCE_6: '5817d673e85d1220db624ca4'
 
 orderedCourseIDs = [
   courseIDs.INTRODUCTION_TO_COMPUTER_SCIENCE
@@ -42,6 +42,18 @@ orderedCourseIDs = [
   courseIDs.COMPUTER_SCIENCE_5
   courseIDs.COMPUTER_SCIENCE_6
 ]
+
+courseAcronyms = {}
+courseAcronyms[courseIDs.INTRODUCTION_TO_COMPUTER_SCIENCE] = 'CS1'
+courseAcronyms[courseIDs.COMPUTER_SCIENCE_2] = 'CS2'
+courseAcronyms[courseIDs.GAME_DEVELOPMENT_1] = 'GD1'
+courseAcronyms[courseIDs.WEB_DEVELOPMENT_1] = 'WD1'
+courseAcronyms[courseIDs.COMPUTER_SCIENCE_3] = 'CS3'
+courseAcronyms[courseIDs.GAME_DEVELOPMENT_2] = 'GD2'
+courseAcronyms[courseIDs.WEB_DEVELOPMENT_2] = 'WD2'
+courseAcronyms[courseIDs.COMPUTER_SCIENCE_4] = 'CS4'
+courseAcronyms[courseIDs.COMPUTER_SCIENCE_5] = 'CS5'
+courseAcronyms[courseIDs.COMPUTER_SCIENCE_6] = 'CS6'
 
 normalizeFunc = (func_thing, object) ->
   # func could be a string to a function in this class
@@ -548,6 +560,7 @@ module.exports = {
   capitalLanguages
   clone
   combineAncestralObject
+  courseAcronyms
   courseIDs
   createLevelNumberMap
   extractPlayerCodeTag

@@ -82,22 +82,23 @@ module.exports =
   fetchActiveSchoolLicenses: wrap (req, res) ->
     unless req.user.isAdmin() or creator is req.user.id
       throw new errors.Forbidden('Must be logged in as given creator')
-    endMonths = parseInt(req.query?.endMonths or 6)
+    licenseEndMonths = parseInt(req.query?.licenseEndMonths or 6)
     latestEndDate = new Date()
-    latestEndDate.setUTCMonth(latestEndDate.getUTCMonth() + endMonths)
+    latestEndDate.setUTCMonth(latestEndDate.getUTCMonth() + licenseEndMonths)
     query = {$and: [{type: 'course'}, {endDate: {$gt: new Date().toISOString()}}, {endDate: {$lt: latestEndDate.toISOString()}}, {$where: 'this.redeemers && this.redeemers.length > 0'}, {creator: {$exists: true}}]}
     # query.$and.push({creator: mongoose.Types.ObjectId('5553886d4366a784056d81eb')})
     prepaids = yield Prepaid.find(query, {creator: 1, startDate: 1, endDate: 1, maxRedeemers: 1, redeemers: 1}).lean()
     console.log new Date().toISOString(), 'prepaids', prepaids.length
     teacherIds = []
     teacherIds.push(prepaid.creator) for prepaid in prepaids
-    admins = yield User.find({_id: {$in: teacherIds}, permissions: 'admin'}, {_id: 1}).lean()
+    teachers = yield User.find({_id: {$in: teacherIds}}, {_id: 1, permissions: 1, name: 1, emailLower: 1}).lean()
     adminMap = {}
-    adminMap[admin._id.toString()] = true for admin in admins
-    teacherIds = []
+    adminMap[teacher._id.toString()] = true for teacher in teachers when 'admin' in (teacher.permissions or [])
+    # console.log 'admins found', Object.keys(adminMap).length
+    teacherIds = _.reject(teacherIds, (id) -> adminMap[id.toString()])
+    teachers = _.reject(teachers, (t) -> adminMap[t._id.toString()])
     studentPrepaidMap = {}
-    for prepaid in prepaids
-      teacherIds.push(prepaid.creator) unless adminMap[prepaid.creator.toString()]
+    for prepaid in prepaids when not adminMap[prepaid.creator.toString()]
       studentPrepaidMap[student.userID.toString()] = true for student in prepaid.redeemers or []
     console.log new Date().toISOString(), 'teacherIds', teacherIds.length
     console.log new Date().toISOString(), 'prepaids', prepaids.length
@@ -141,7 +142,7 @@ module.exports =
         for levelSession in results[i]
           levelSessions.push(levelSession)
       console.log new Date().toISOString(), 'levelSessions', levelSessions.length
-      res.status(200).send({classrooms, levelSessions, prepaids})
+      res.status(200).send({classrooms, levelSessions, prepaids, teachers})
 
   fetchActiveSchools: wrap (req, res) ->
     unless req.user.isAdmin() or creator is req.user.id

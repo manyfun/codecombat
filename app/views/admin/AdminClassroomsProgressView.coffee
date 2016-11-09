@@ -25,8 +25,8 @@ module.exports = class AdminClassroomsProgressView extends RootView
 
   initialize: ->
     return super() unless me.isAdmin()
-    @endMonths = utils.getQueryVariable('endMonths', 6)
-    @buildProgressData(@endMonths)
+    @licenseEndMonths = utils.getQueryVariable('licenseEndMonths', 6)
+    @buildProgressData(@licenseEndMonths)
     super()
 
   buildProgressData: ->
@@ -34,10 +34,10 @@ module.exports = class AdminClassroomsProgressView extends RootView
     Promise.all [
       Promise.resolve($.get('/db/course')),
       Promise.resolve($.get('/db/campaign')),
-      Promise.resolve($.get("/db/prepaid/-/active-school-licenses?endMonths=#{@endMonths}"))
+      Promise.resolve($.get("/db/prepaid/-/active-school-licenses?licenseEndMonths=#{@licenseEndMonths}"))
     ]
     .then (results) =>
-      [courses, campaigns, {@classrooms, levelSessions, prepaids}] = results
+      [courses, campaigns, {@classrooms, levelSessions, prepaids, teachers}] = results
       courses = courses.filter((c) => c.releasePhase is 'released')
       utils.sortCourses(courses)
       licenses = prepaids.filter((p) => p.redeemers?.length > 0)
@@ -51,6 +51,10 @@ module.exports = class AdminClassroomsProgressView extends RootView
       # console.log 'classrooms', @classrooms
       # console.log 'licenses', licenses
       # console.log 'levelSessions', levelSessions
+
+      @teacherMap = {}
+      @teacherMap[teacher._id] = teacher for teacher in teachers
+      # console.log '@teacherMap', @teacherMap
 
       [@courseLevelsMap, @originalSlugMap, orderedLevelOriginals] = @getLatestLevels(campaigns, courses)
       [userLatestActivityMap, userLevelOriginalCompleteMap, userLicensesMap] = @getUserActivity(levelSessions, licenses, orderedLevelOriginals)
@@ -178,29 +182,71 @@ module.exports = class AdminClassroomsProgressView extends RootView
           # break
         @classroomProgress.push({classroom, licenses: classroomLicenses, latestActivity: classroomLatestActivity[classroom._id]})
 
+      # Find least amount of content buffer by teacher
+      # TODO: use classroom members instad of license redeemers?
+      teacherContentBufferMap = {}
+      for progress in @classroomProgress
+        teacherId = progress.classroom.ownerID
+        teacherContentBufferMap[teacherId] ?= {}
+        percentComplete = _.max(_.map(progress.licenses, 'percentComplete'))
+        if not teacherContentBufferMap[teacherId].percentComplete? or percentComplete > teacherContentBufferMap[teacherId].percentComplete
+          teacherContentBufferMap[teacherId].percentComplete = percentComplete
+        if not teacherContentBufferMap[teacherId].latestActivity? or progress.latestActivity > teacherContentBufferMap[teacherId].latestActivity
+          teacherContentBufferMap[teacherId].latestActivity = progress.latestActivity
+        numUsers = _.max(_.map(progress.licenses, (l) -> l.license?.redeemers?.length ? 0))
+        if not teacherContentBufferMap[teacherId].numUsers? or numUsers > teacherContentBufferMap[teacherId].numUsers
+          teacherContentBufferMap[teacherId].numUsers = numUsers
+      # console.log 'teacherContentBufferMap', teacherContentBufferMap
+
       @classroomProgress.sort (a, b) ->
-        percentCompleteA = _.max(_.map(a.licenses, 'percentComplete'))
-        percentCompleteB = _.max(_.map(b.licenses, 'percentComplete'))
-        if percentCompleteA > percentCompleteB
-          return -1
-        else if percentCompleteA < percentCompleteB
-          return 1
-        else
-          latestActivityA = a.latestActivity
-          latestActivityB = b.latestActivity
-          if latestActivityA > latestActivityB
+        idA = a.classroom.ownerID
+        idB = b.classroom.ownerID
+        if idA is idB
+          percentCompleteA = _.max(_.map(a.licenses, 'percentComplete'))
+          percentCompleteB = _.max(_.map(b.licenses, 'percentComplete'))
+          if percentCompleteA > percentCompleteB
             return -1
-          else if latestActivityA < latestActivityB
+          else if percentCompleteA < percentCompleteB
             return 1
           else
-            numUsersA = _.max(_.map(a.licenses, (l) -> l.redeemers?.length ? 0))
-            numUsersB = _.max(_.map(b.licenses, (l) -> l.redeemers?.length ? 0))
-            if numUsersA > numUsersB
+            latestActivityA = a.latestActivity
+            latestActivityB = b.latestActivity
+            if latestActivityA > latestActivityB
               return -1
-            else if numUsersA < numUsersB
+            else if latestActivityA < latestActivityB
               return 1
             else
-              return 0
+              numUsersA = _.max(_.map(a.licenses, (l) -> l.license?.redeemers?.length ? 0))
+              numUsersB = _.max(_.map(b.licenses, (l) -> l.license?.redeemers?.length ? 0))
+              if numUsersA > numUsersB
+                return -1
+              else if numUsersA < numUsersB
+                return 1
+              else
+                return 0
+        else
+          percentCompleteA = teacherContentBufferMap[idA].percentComplete
+          percentCompleteB = teacherContentBufferMap[idB].percentComplete
+          if percentCompleteA > percentCompleteB
+            return -1
+          else if percentCompleteA < percentCompleteB
+            return 1
+          else
+            latestActivityA = teacherContentBufferMap[idA].latestActivity
+            latestActivityB = teacherContentBufferMap[idB].latestActivity
+            if latestActivityA > latestActivityB
+              return -1
+            else if latestActivityA < latestActivityB
+              return 1
+            else
+              numUsersA = teacherContentBufferMap[idA].numUsers
+              numUsersB = teacherContentBufferMap[idB].numUsers
+              if numUsersA > numUsersB
+                return -1
+              else if numUsersA < numUsersB
+                return 1
+              else
+                return 0
       console.log 'classroomProgress', @classroomProgress
 
       @render?()

@@ -192,60 +192,101 @@ UserSchema.statics.updateServiceSettings = (doc, callback) ->
       console.error('Error updating stripe customer...', err) if err
 
   return callback?() unless emailChanged or doc.newsSubsChanged
-
-  newGroups = []
-  for [mailchimpEmailGroup, emailGroup] in _.zip(mail.MAILCHIMP_GROUPS, mail.NEWS_GROUPS)
-    newGroups.push(mailchimpEmailGroup) if doc.isEmailSubscriptionEnabled(emailGroup)
-
-  if (not existingProps) and newGroups.length is 0
-    return callback?() # don't add totally unsubscribed people to the list
-
-  params = {}
-  params.id = mail.MAILCHIMP_LIST_ID
-  params.email = if existingProps then {leid: existingProps.leid} else {email: doc.get('email')}
-  params.merge_vars = {
-    groupings: [{id: mail.MAILCHIMP_GROUP_ID, groups: newGroups}]
-    'new-email': doc.get('email')
-  }
-  params.update_existing = true
-
-  onSuccess = (data) ->
-    data.email = doc.get('email')  # Make sure that we don't spam opt-in emails even if MailChimp doesn't update the email it gets in this object until they have confirmed.
-    doc.set('mailChimp', data)
-    doc.updatedMailChimp = true
-    doc.save()
+  doc.updateMailChimp()
+  .then(->
+    console.log('success!')
     callback?()
-
-  onFailure = (error) ->
-    log.error 'failed to subscribe', error, callback?
-    doc.updatedMailChimp = true
+  )
+  .catch((e) ->
+    console.log(e.stack)
+    console.log(e.errors)
+    console.log(_.keys(e))
     callback?()
+  )
+  console.log('?')
+#
+#  newGroups = []
+#  for [mailchimpEmailGroup, emailGroup] in _.zip(mail.MAILCHIMP_GROUPS, mail.NEWS_GROUPS)
+#    newGroups.push(mailchimpEmailGroup) if doc.isEmailSubscriptionEnabled(emailGroup)
+#
+#  if (not existingProps) and newGroups.length is 0
+#    return callback?() # don't add totally unsubscribed people to the list
+#
+#  params = {}
+#  params.id = mail.MAILCHIMP_LIST_ID
+#  params.email = if existingProps then {leid: existingProps.leid} else {email: doc.get('email')}
+#  params.merge_vars = {
+#    groupings: [{id: mail.MAILCHIMP_GROUP_ID, groups: newGroups}]
+#    'new-email': doc.get('email')
+#  }
+#  params.update_existing = true
+#
+#  onSuccess = (data) ->
+#    data.email = doc.get('email')  # Make sure that we don't spam opt-in emails even if MailChimp doesn't update the email it gets in this object until they have confirmed.
+#    doc.set('mailChimp', data)
+#    doc.updatedMailChimp = true
+#    doc.save()
+#    callback?()
+#
+#  onFailure = (error) ->
+#    log.error 'failed to subscribe', error, callback?
+#    doc.updatedMailChimp = true
+#    callback?()
+#
+#  mc?.lists.subscribe params, onSuccess, onFailure
 
-  mc?.lists.subscribe params, onSuccess, onFailure
+makeMailChimpListMemberUrl = (email) ->
+  
 
 UserSchema.methods.updateMailChimp = co.wrap ->
-  newGroups = []
-  for [mailchimpEmailGroup, emailGroup] in _.zip(mail.MAILCHIMP_GROUPS, mail.NEWS_GROUPS)
-    newGroups.push(mailchimpEmailGroup) if doc.isEmailSubscriptionEnabled(emailGroup)
+  config = require '../../server_config'
+  MailChimp = require('mailchimp-api-v3')
+  newAPI = new MailChimp(config.mail.mailchimpAPIKey)
 
-  oldMailChimpSettings = @get('mailChimp')
+  interests = {}
+  for [interestId, emailGroup] in _.zip(mail.INTEREST_IDS, mail.NEWS_GROUPS)
+    interests[interestId] = @isEmailSubscriptionEnabled(emailGroup)
+  anyInterests = _.any(_.values(interests))
+  
+  { email: mailChimpEmail } = @get('mailChimp') or {}
 
   # don't add totally unsubscribed people to the list
-  return if (not oldMailChimpSettings) and newGroups.length is 0
+  return unless mailChimpEmail or anyInterests
 
   # don't add unsubscribed users unless their email is verified
-  return unless (@get('emailVerified') or oldMailChimpSettings)
-
+  return unless @get('emailVerified') or mailChimpEmail
+  
   # Generate subscriber hash
   # See: http://developer.mailchimp.com/documentation/mailchimp/guides/manage-subscribers-with-the-mailchimp-api/
-  # TODO: Migrate to hashed first
-  oldMailChimpEmail = oldMailChimpSettings?.email or oldMailChimpSettings?.email_address or ''
-  subscriberHash = if oldMailChimpEmail then crypto.createHash('md5').update(oldMailChimpEmail).digest('hex') else ''
+  subscriberHash = if mailChimpEmail then crypto.createHash('md5').update(mailChimpEmail).digest('hex') else ''
 
-  # TODO: Implement/test this pseudocode
-  
-  # if user's email does not match their mailChimp email, unsubscribe the old email
+  # if user's email does not match their mailChimp email, or they are not subscribed to any interests, unsubscribe
+  if mailChimpEmail isnt @get('email')
+    console.log 'deleting old email'
+    deleteResponse = yield newAPI.delete("/lists/#{mail.MAILCHIMP_LIST_ID}/members/#{subscriberHash}")
+    console.log { deleteResponse }
+    yield @update({$unset: 'mailChimp'})
+
   # if the user's email is not validated and they are not already subscribed on MailChimp, return
+  return if not mailChimpEmail and not @get('emailVerified')
+  
+  # need an email to subscribe!
+  email = @get('email')
+  return unless email
+
+  subscriberHash = crypto.createHash('md5').update(email).digest('hex')
+  body = {
+    interests
+    email_address: email
+    status: if anyInterests then 'subscribed' else 'unsubscribed'
+    merge_fields:
+      FNAME: @get('firstName')
+      LNAME: @get('lastName')
+  }
+  response = yield newAPI.put("/lists/#{mail.MAILCHIMP_LIST_ID}/members/#{subscriberHash}", body)
+  yield @update({$set: {mailChimp: {email}}})
+  console.log { response }
+  
   # PUT the user to MailChimp, updating state and interests (groups)
     
 UserSchema.statics.statsMapping =

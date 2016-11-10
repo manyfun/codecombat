@@ -58,13 +58,11 @@ describe 'User', ->
   describe '.updateServiceSettings()', ->
     makeMC = (callback) ->
 
-    it 'uses emails to determine what to send to MailChimp', (done) ->
-      spyOn(mc.lists, 'subscribe').and.callFake (params) ->
-        expect(JSON.stringify(params.merge_vars.groupings[0].groups)).toBe(JSON.stringify(['Announcements']))
-        done()
-
+    it 'uses emails to determine what to send to MailChimp', ->
       user = new User({emailSubscriptions: ['announcement'], email: 'tester@gmail.com'})
+      spyOn(user, 'updateMailChimp').and.returnValue(Promise.resolve())
       User.updateServiceSettings(user)
+      expect(user.updateMailChimp).toHaveBeenCalled()
 
   describe '.isAdmin()', ->
     it 'returns true if user has "admin" permission', (done) ->
@@ -121,3 +119,115 @@ describe 'User', ->
       user3 = new User({stripe: {free: true}})
       expect(user3.get('subscription').active).toBe(true)
       expect(user3.get('subscription').ends).toBeUndefined()
+
+  describe '.updateMailChimp()', ->
+    mailChimp = require '../../../server/lib/mail-chimp'
+
+    it 'propagates user notification and name settings to MailChimp', utils.wrap (done) ->
+      user = yield utils.initUser({
+        emailVerified: true
+        firstName: 'First'
+        lastName: 'Last'
+        emails: {
+          diplomatNews: { enabled: true }
+        }
+      })
+      spyOn(mailChimp.api, 'put').and.returnValue(Promise.resolve())
+      yield user.updateMailChimp()
+      expect(mailChimp.api.put.calls.count()).toBe(1)
+      args = mailChimp.api.put.calls.argsFor(0)
+      expect(args[0]).toMatch("^/lists/[0-9a-f]+/members/[0-9a-f]+$")
+      expect(args[1].email_address).toBe(user.get('email'))
+      diplomatInterest = _.find(mailChimp.interests, (interest) -> interest.property is 'diplomatNews')
+      for [key, value] in _.pairs(args[1].interests)
+        if key is diplomatInterest.mailChimpId
+          expect(value).toBe(true)
+        else
+          expect(value).toBe(false)
+      expect(args[1].status).toBe('subscribed')
+      expect(args[1].merge_fields['FNAME']).toBe('First')
+      expect(args[1].merge_fields['LNAME']).toBe('Last')
+      user = yield User.findById(user.id)
+      expect(user.get('mailChimp').email).toBe(user.get('email'))
+      done()
+      
+    describe 'when user email is validated on MailChimp but not CodeCombat', ->
+      
+      it 'still updates their settings on MailChimp', utils.wrap (done) ->
+        email = 'some@email.com'
+        user = yield utils.initUser({
+          email
+          emailVerified: false
+          emails: {
+            diplomatNews: { enabled: true }
+          }
+          mailChimp: { email }
+        })
+        spyOn(mailChimp.api, 'get').and.returnValue(Promise.resolve({ status: 'subscribed' }))
+        spyOn(mailChimp.api, 'put').and.returnValue(Promise.resolve())
+        yield user.updateMailChimp()
+        expect(mailChimp.api.get.calls.count()).toBe(1)
+        expect(mailChimp.api.put.calls.count()).toBe(1)
+        args = mailChimp.api.put.calls.argsFor(0)
+        expect(args[1].status).toBe('subscribed')
+        done()
+        
+    describe 'when the user\'s email changes', ->
+      
+      it 'unsubscribes the old entry, and does not subscribe the new email until validated', utils.wrap (done) ->
+        oldEmail = 'old@email.com'
+        newEmail = 'new@email.com'
+        user = yield utils.initUser({
+          email: newEmail
+          emailVerified: false
+          emails: {
+            diplomatNews: { enabled: true }
+          }
+          mailChimp: { email: oldEmail }
+        })
+        spyOn(mailChimp.api, 'put').and.returnValue(Promise.resolve())
+        yield user.updateMailChimp()
+        expect(mailChimp.api.put.calls.count()).toBe(1)
+        args = mailChimp.api.put.calls.argsFor(0)
+        expect(args[1].status).toBe('unsubscribed')
+        expect(args[0]).toBe(mailChimp.makeSubscriberUrl(oldEmail))
+        done()
+      
+    describe 'when the user is not subscribed on MailChimp and is not subscribed to any interests on CodeCombat', ->
+      
+      it 'does nothing', utils.wrap (done) ->
+        user = yield utils.initUser({
+          emailVerified: true
+          emails: {
+            
+          }
+        })
+        spyOn(mailChimp.api, 'get')
+        spyOn(mailChimp.api, 'put')
+        yield user.updateMailChimp()
+        expect(mailChimp.api.get.calls.count()).toBe(0)
+        expect(mailChimp.api.put.calls.count()).toBe(0)
+        done()
+      
+    describe 'when the user is on MailChimp but not validated there nor on CodeCombat', ->
+      
+      it 'updates with status set to unsubscribed', ->
+        email = 'some@email.com'
+        user = yield utils.initUser({
+          email
+          emailVerified: false
+          emails: {
+            diplomatNews: { enabled: true }
+          }
+          mailChimp: { email }
+        })
+        spyOn(mailChimp.api, 'get').and.returnValue(Promise.resolve({ status: 'subscribed' }))
+        spyOn(mailChimp.api, 'put').and.returnValue(Promise.resolve())
+        yield user.updateMailChimp()
+        expect(mailChimp.api.get.calls.count()).toBe(1)
+        expect(mailChimp.api.put.calls.count()).toBe(1)
+        args = mailChimp.api.put.calls.argsFor(0)
+        expect(args[1].status).toBe('subscribed')
+        done()
+      
+      

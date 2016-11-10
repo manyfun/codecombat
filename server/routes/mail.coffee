@@ -1,4 +1,4 @@
-mail = require '../commons/mail'
+mailChimp = require '../lib/mail-chimp'
 MailSent = require '../models/MailSent'
 UserRemark = require '../models/UserRemark'
 User = require '../models/User'
@@ -771,8 +771,9 @@ handleMailchimpWebHook = (req, res) ->
 module.exports.handleProfileUpdate = handleProfileUpdate = (user, post) ->
   mailchimpSubs = post.data.merges.INTERESTS.split(', ')
 
-  for [mailchimpEmailGroup, emailGroup] in _.zip(mail.MAILCHIMP_GROUPS, mail.NEWS_GROUPS)
-    user.setEmailSubscription emailGroup, mailchimpEmailGroup in mailchimpSubs
+  for interest in mailChimp.interests
+    console.log 'interest in mailchimp subs', interest.mailChimpLabel, interest, mailchimpSubs, interest.mailChimpLabel in mailchimpSubs
+    user.setEmailSubscription interest.property, interest.mailChimpLabel in mailchimpSubs
 
   fname = post.data.merges.FNAME
   user.set('firstName', fname) if fname
@@ -786,5 +787,6 @@ module.exports.handleProfileUpdate = handleProfileUpdate = (user, post) ->
 
 module.exports.handleUnsubscribe = handleUnsubscribe = (user) ->
   user.set 'emailSubscriptions', []
-  for emailGroup in mail.NEWS_GROUPS
-    user.setEmailSubscription emailGroup, false
+  for interest in mailChimp.interests
+    console.log 'set', interest.property, 'to false'
+    user.setEmailSubscription interest.property, false

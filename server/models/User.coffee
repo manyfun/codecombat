@@ -2,7 +2,6 @@ mongoose = require 'mongoose'
 jsonschema = require '../../app/schemas/models/user'
 crypto = require 'crypto'
 {salt, isProduction} = require '../../server_config'
-mail = require '../commons/mail'
 log = require 'winston'
 plugins = require '../plugins/plugins'
 AnalyticsUsersActive = require './AnalyticsUsersActive'
@@ -13,6 +12,7 @@ errors = require '../commons/errors'
 Promise = require 'bluebird'
 co = require 'co'
 core_utils = require '../../app/core/utils'
+mailChimp = require '../lib/mail-chimp'
 
 config = require '../../server_config'
 stripe = require('stripe')(config.stripe.secretKey)
@@ -31,7 +31,8 @@ UserSchema.index({'facebookID': 1}, {sparse: true})
 UserSchema.index({'gplusID': 1}, {sparse: true})
 UserSchema.index({'cleverID': 1}, {sparse: true})
 UserSchema.index({'iosIdentifierForVendor': 1}, {name: 'iOS identifier for vendor', sparse: true, unique: true})
-UserSchema.index({'mailChimp.leid': 1}, {sparse: true})
+UserSchema.index({'mailChimp.leid': 1}, {sparse: true}) # deprecated
+UserSchema.index({'mailChimp.email': 1}, {sparse: true})
 UserSchema.index({'nameLower': 1}, {sparse: true, name: 'nameLower_1'})
 UserSchema.index({'simulatedBy': 1})
 UserSchema.index({'slug': 1}, {name: 'slug index', sparse: true, unique: true})
@@ -156,7 +157,8 @@ UserSchema.methods.setEmailSubscription = (newName, enabled) ->
   newSubs[newName] ?= {}
   newSubs[newName].enabled = enabled
   @set('emails', newSubs)
-  @newsSubsChanged = true if newName in mail.NEWS_GROUPS
+  newsGroups = _.pluck(mailChimp.interests, 'property')
+  @newsSubsChanged = true if newName in newsGroups
 
 UserSchema.methods.gems = ->
   gemsEarned = @get('earned')?.gems ? 0
@@ -173,7 +175,7 @@ UserSchema.methods.isEmailSubscriptionEnabled = (newName) ->
     return oldName and oldName in oldSubs if oldSubs
   emails ?= {}
   _.defaults emails, _.cloneDeep(jsonschema.properties.emails.default)
-  return emails[newName]?.enabled
+  return emails[newName]?.enabled?
 
 UserSchema.statics.updateServiceSettings = (doc, callback) ->
   return callback?() unless isProduction or GLOBAL.testing
@@ -194,98 +196,65 @@ UserSchema.statics.updateServiceSettings = (doc, callback) ->
   return callback?() unless emailChanged or doc.newsSubsChanged
   doc.updateMailChimp()
   .then(->
-    console.log('success!')
     callback?()
   )
   .catch((e) ->
     console.log(e.stack)
     console.log(e.errors)
-    console.log(_.keys(e))
     callback?()
   )
-  console.log('?')
-#
-#  newGroups = []
-#  for [mailchimpEmailGroup, emailGroup] in _.zip(mail.MAILCHIMP_GROUPS, mail.NEWS_GROUPS)
-#    newGroups.push(mailchimpEmailGroup) if doc.isEmailSubscriptionEnabled(emailGroup)
-#
-#  if (not existingProps) and newGroups.length is 0
-#    return callback?() # don't add totally unsubscribed people to the list
-#
-#  params = {}
-#  params.id = mail.MAILCHIMP_LIST_ID
-#  params.email = if existingProps then {leid: existingProps.leid} else {email: doc.get('email')}
-#  params.merge_vars = {
-#    groupings: [{id: mail.MAILCHIMP_GROUP_ID, groups: newGroups}]
-#    'new-email': doc.get('email')
-#  }
-#  params.update_existing = true
-#
-#  onSuccess = (data) ->
-#    data.email = doc.get('email')  # Make sure that we don't spam opt-in emails even if MailChimp doesn't update the email it gets in this object until they have confirmed.
-#    doc.set('mailChimp', data)
-#    doc.updatedMailChimp = true
-#    doc.save()
-#    callback?()
-#
-#  onFailure = (error) ->
-#    log.error 'failed to subscribe', error, callback?
-#    doc.updatedMailChimp = true
-#    callback?()
-#
-#  mc?.lists.subscribe params, onSuccess, onFailure
-
-makeMailChimpListMemberUrl = (email) ->
-  
 
 UserSchema.methods.updateMailChimp = co.wrap ->
-  config = require '../../server_config'
-  MailChimp = require('mailchimp-api-v3')
-  newAPI = new MailChimp(config.mail.mailchimpAPIKey)
-
+  
+  # construct interests object for MailChimp
   interests = {}
-  for [interestId, emailGroup] in _.zip(mail.INTEREST_IDS, mail.NEWS_GROUPS)
-    interests[interestId] = @isEmailSubscriptionEnabled(emailGroup)
+  for interest in mailChimp.interests
+    interests[interest.mailChimpId] = @isEmailSubscriptionEnabled(interest.property)
   anyInterests = _.any(_.values(interests))
   
+  # grab the email this user has registered on MailChimp
   { email: mailChimpEmail } = @get('mailChimp') or {}
 
-  # don't add totally unsubscribed people to the list
+  # don't do anything for people who are unsubscribed and never were subscribed
   return unless mailChimpEmail or anyInterests
 
-  # don't add unsubscribed users unless their email is verified
-  return unless @get('emailVerified') or mailChimpEmail
-  
-  # Generate subscriber hash
-  # See: http://developer.mailchimp.com/documentation/mailchimp/guides/manage-subscribers-with-the-mailchimp-api/
-  subscriberHash = if mailChimpEmail then crypto.createHash('md5').update(mailChimpEmail).digest('hex') else ''
+  # if user's email does not match their mailChimp email, unsubscribe the old email
+  if mailChimpEmail and mailChimpEmail isnt @get('email')
+    body = {
+      email_address: mailChimpEmail
+      status: 'unsubscribed'
+    }
+    yield mailChimp.api.put(mailChimp.makeSubscriberUrl(mailChimpEmail), body)
+    yield @update({$unset: {'mailChimp':''}})
+    mailChimpEmail = null # from here on, have logic treat this as a new subscriber addition
 
-  # if user's email does not match their mailChimp email, or they are not subscribed to any interests, unsubscribe
-  if mailChimpEmail isnt @get('email')
-    console.log 'deleting old email'
-    deleteResponse = yield newAPI.delete("/lists/#{mail.MAILCHIMP_LIST_ID}/members/#{subscriberHash}")
-    console.log { deleteResponse }
-    yield @update({$unset: 'mailChimp'})
-
-  # if the user's email is not validated and they are not already subscribed on MailChimp, return
-  return if not mailChimpEmail and not @get('emailVerified')
-  
   # need an email to subscribe!
   email = @get('email')
   return unless email
 
-  subscriberHash = crypto.createHash('md5').update(email).digest('hex')
+  # check if email is verified here or there 
+  emailVerified = @get('emailVerified')
+  if mailChimpEmail is email and not emailVerified
+    try
+      subscriber = yield mailChimp.api.get(mailChimp.makeSubscriberUrl(mailChimpEmail))
+      if subscriber.status is 'subscribed'
+        emailVerified = true
+    catch e
+      console.log 'failed to get mailchimp status', e
+
+  # don't add new users unless their email is verified
+  return unless emailVerified or mailChimpEmail
+
   body = {
     interests
     email_address: email
-    status: if anyInterests then 'subscribed' else 'unsubscribed'
+    status: if anyInterests and emailVerified then 'subscribed' else 'unsubscribed'
     merge_fields:
       FNAME: @get('firstName')
       LNAME: @get('lastName')
   }
-  response = yield newAPI.put("/lists/#{mail.MAILCHIMP_LIST_ID}/members/#{subscriberHash}", body)
+  response = yield mailChimp.api.put(mailChimp.makeSubscriberUrl(email), body)
   yield @update({$set: {mailChimp: {email}}})
-  console.log { response }
   
   # PUT the user to MailChimp, updating state and interests (groups)
     
@@ -508,7 +477,8 @@ UserSchema.pre('save', (next) ->
 )
 
 UserSchema.post 'save', (doc) ->
-  doc.newsSubsChanged = not _.isEqual(_.pick(doc.get('emails'), mail.NEWS_GROUPS), _.pick(doc.startingEmails, mail.NEWS_GROUPS))
+  newsGroups = _.pluck(mailChimp.interests, 'property')
+  doc.newsSubsChanged = not _.isEqual(_.pick(doc.get('emails'), newsGroups), _.pick(doc.startingEmails, newsGroups))
   UserSchema.statics.updateServiceSettings(doc)
 
   
